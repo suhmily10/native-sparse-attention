@@ -880,8 +880,11 @@ def parallel_nsa_with_compression(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    g_slc: torch.Tensor,  # 添加必需的门控参数
     block_counts: Union[torch.LongTensor, int],
     block_size: int = 64,
+    window_size: int = 0,
+    g_swa: Optional[torch.Tensor] = None,  # 添加可选的门控参数
     scale: Optional[float] = None,
     cu_seqlens: Optional[torch.LongTensor] = None,
     head_first: bool = False
@@ -928,13 +931,42 @@ def parallel_nsa_with_compression(
         assert q.shape[0] == 1, "batch size must be 1 when cu_seqlens are provided"
     if head_first:
         q, k, v = map(lambda x: rearrange(x, 'b h t d -> b t h d'), (q, k, v))
-        g_cmp, g_slc = map(lambda x: rearrange(x, 'b h t -> b t h'), (g_cmp, g_slc))
+        g_slc = rearrange(g_slc, 'b h t -> b t h') if g_slc is not None else None
+        g_swa = rearrange(g_swa, 'b h t -> b t h') if window_size > 0 else None
         if not isinstance(block_counts, int):
             block_counts = rearrange(block_counts, 'b h t -> b t h')
 
+
+    # 添加压缩索引生成步骤
+    token_indices = prepare_token_indices(cu_seqlens) if cu_seqlens is not None else None
+    block_indices = parallel_nsa_compression(
+        q=q,
+        k=k,
+        block_counts=block_counts,
+        block_size=block_size,
+        scale=scale,
+        offsets=cu_seqlens,
+        token_indices=token_indices
+    )
+    
+    # 修改函数调用，传递window_size参数
+    o_slc, o_swa = ParallelNSAFunction.apply(
+        q, k, v, block_indices, block_counts, 
+        block_size, window_size, scale, cu_seqlens
+    )
+    
+    # 根据window_size决定输出合并方式
+    if window_size > 0:
+        assert g_swa is not None, "当window_size>0时必须提供g_swa参数"
+        o = o_slc * g_slc.unsqueeze(-1) + o_swa * g_swa.unsqueeze(-1)
+    else:
+        o = o_slc * g_slc.unsqueeze(-1) if g_slc is not None else o_slc
+
+
     token_indices = prepare_token_indices(cu_seqlens) if cu_seqlens is not None else None
     block_indices = parallel_nsa_compression(q, k, block_counts, block_size, scale, cu_seqlens, token_indices)
-    o = ParallelNSAFunction.apply(q, k, v, block_indices, block_counts, block_size, scale, cu_seqlens)
+    o_slc, o_swa = ParallelNSAFunction.apply(q, k, v, block_indices, block_counts, block_size, 0, scale, cu_seqlens)
+    o = o_slc
     if head_first:
         o = rearrange(o, 'b t h d -> b h t d')
     return o
