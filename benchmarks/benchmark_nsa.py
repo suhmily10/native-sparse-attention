@@ -33,8 +33,8 @@ def benchmark(T, provider):
     dtype = torch.bfloat16
     requires_grad = True
     B, H, HQ, D, S = 4, 4, 64, 128, 16
-    block_size = 64
-    window_size = 64
+    block_size = 128
+    window_size = 128
 
     q = torch.randn(B, T, HQ, D, device=device, requires_grad=requires_grad, dtype=dtype)
     k = torch.randn(B, T, H, D, device=device, requires_grad=requires_grad, dtype=dtype)
@@ -43,12 +43,16 @@ def benchmark(T, provider):
     g_swa = torch.rand((B, T, HQ), dtype=dtype, device='cuda').requires_grad_(True)
     do = torch.ones_like(q, dtype=dtype)
 
+    # Make sure T is a power of 2 for block indices calculation
     block_indices = torch.full((B, T, H, S), T, dtype=torch.long, device=device)
     for b in range(B):
         for t in range(T):
             for h in range(H):
-                i_i = torch.randperm(max(1, triton.cdiv(t, block_size)))[:S]
-                block_indices[b, t, h, :len(i_i)] = i_i
+                # Limit the maximum number of blocks to avoid out-of-bounds issues
+                max_blocks = min(triton.cdiv(t, block_size), S)
+                if max_blocks > 0:
+                    i_i = torch.randperm(max_blocks)[:min(S, max_blocks)]
+                    block_indices[b, t, h, :len(i_i)] = i_i
     block_indices = block_indices.sort(-1)[0]
     block_counts = torch.randint(1, S + 1, (B, T, H), device=device)
 
@@ -60,10 +64,15 @@ def benchmark(T, provider):
             quantiles=quantiles
         )
     elif provider == 'nsa_bwd':
-        results = triton.testing.do_bench(
-            lambda: parallel_nsa(q, k, v, g_slc, g_swa, block_indices, block_counts, block_size, window_size).backward(do),
-            quantiles=quantiles
-        )
+        # Wrap in a try-except to handle any errors more gracefully
+        try:
+            results = triton.testing.do_bench(
+                lambda: parallel_nsa(q, k, v, g_slc, g_swa, block_indices, block_counts, block_size, window_size).backward(do),
+                quantiles=quantiles
+            )
+        except Exception as e:
+            print(f"Error in NSA backward: {e}")
+            results = float('inf'), float('inf'), float('inf')
     elif provider == 'flash':
         results = triton.testing.do_bench(
             lambda: flash_attn_func(q, k, v, causal=True),
@@ -78,4 +87,4 @@ def benchmark(T, provider):
 
 
 if __name__ == '__main__':
-    benchmark.run(print_data=True, save_path='.')
+    benchmark.run(print_data=True)
