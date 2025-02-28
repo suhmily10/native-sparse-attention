@@ -682,6 +682,7 @@ def parallel_nsa_fwd(
         BV = min(128, triton.next_power_of_2(V))
     NK = triton.cdiv(K, BK)
     NV = triton.cdiv(V, BV)
+
     assert NK == 1, "The key dimension can not be larger than 256"
 
     grid = (T, NV, B * H)
@@ -690,6 +691,7 @@ def parallel_nsa_fwd(
     lse_slc = torch.empty(B, T, HQ, dtype=torch.float, device=q.device)
     lse_swa = torch.empty(B, T, HQ, dtype=torch.float, device=q.device) if window_size > 0 else None
 
+    # import pdb;pdb.set_trace()
     parallel_nsa_fwd_kernel[grid](
         q=q,
         k=k,
@@ -992,7 +994,7 @@ def parallel_nsa(
         g_slc, g_swa = map(lambda x: rearrange(x, 'b h t -> b t h'), (g_slc, g_swa))
         if isinstance(block_counts, torch.Tensor):
             block_counts = rearrange(block_counts, 'b h t -> b t h')
-    # assert q.shape[2] % (k.shape[2] * 16) == 0, "Group size must be a multiple of 16 in NSA"
+    assert q.shape[2] % (k.shape[2] * 16) == 0, "Group size must be a multiple of 16 in NSA"
 
     if isinstance(block_counts, int):
         block_indices = block_indices[:, :, :, :block_counts]
@@ -1069,7 +1071,7 @@ def parallel_nsa_with_compression(
         g_swa = rearrange(g_swa, 'b h t -> b t h') if window_size > 0 else None
         if not isinstance(block_counts, int):
             block_counts = rearrange(block_counts, 'b h t -> b t h')
-    # assert q.shape[2] % (k.shape[2] * 16) == 0, "Group size must be a multiple of 16 in NSA"
+    assert q.shape[2] % (k.shape[2] * 16) == 0, "Group size must be a multiple of 16 in NSA"
 
 
     # 添加压缩索引生成步骤
@@ -1077,6 +1079,7 @@ def parallel_nsa_with_compression(
     block_indices = parallel_nsa_compression(
         q=q,
         k=k,
+        v=v,
         block_counts=block_counts,
         block_size=block_size,
         scale=scale,

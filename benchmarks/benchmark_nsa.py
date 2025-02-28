@@ -12,7 +12,7 @@ from native_sparse_attention.ops.parallel import parallel_nsa
         # argument names to use as an x-axis for the plot
         x_names=['T'],
         # different possible values for `x_name`
-        x_vals=[1024 * 2 ** i for i in range(0, 6)],
+        x_vals=[2048 * 2 ** i for i in range(0, 3)],
         # argument name whose value corresponds to a different line in the plot
         line_arg='provider',
         # possible values for `line_arg``
@@ -32,10 +32,13 @@ def benchmark(T, provider):
     device = 'cuda'
     dtype = torch.bfloat16
     requires_grad = True
-    B, H, HQ, D, S = 4, 4, 64, 128, 16
-    block_size = 128
-    window_size = 128
+    
+    # 修改为run_local.sh中的模型配置
+    B, H, HQ, D, S = 2, 8, 128, 64, 8       
+    block_size = 32                         # 匹配 --nsa-block-size 32
+    window_size = 128                         # 匹配 --nsa-sliding-window 0
 
+    
     q = torch.randn(B, T, HQ, D, device=device, requires_grad=requires_grad, dtype=dtype)
     k = torch.randn(B, T, H, D, device=device, requires_grad=requires_grad, dtype=dtype)
     v = torch.randn(B, T, H, D, device=device, requires_grad=requires_grad, dtype=dtype)
@@ -83,6 +86,9 @@ def benchmark(T, provider):
             lambda: flash_attn_func(q, k, v, causal=True).backward(do),
             quantiles=quantiles
         )
+
+    torch.cuda.empty_cache()
+    
     return results
 
 
